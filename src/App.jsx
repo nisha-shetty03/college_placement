@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
- import "./App.css
+ import "./App.css;
 const initialStore = {
   students: [],      // {username, name, regNo, branch, cgpa, skills[], resume}
   openings: [],      // {id, company, role, skills[], ctc, details, postedBy}
