@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from "react";
- import "./App.css";
+import React, { useState, useMemo, useEffect } from "react";
+import "./App.css";
+import { supabase } from "./supabase";
 const initialStore = {
   students: [],      // {username, name, regNo, branch, cgpa, skills[], resume}
   openings: [],      // {id, company, role, skills[], ctc, details, postedBy}
@@ -44,9 +45,15 @@ function App() {
   const [currentUser, setCurrentUser] = useState(null); // {role, username}
   const [activeSection, setActiveSection] = useState(null); // "login" | role
 
-  // login form
-  const [loginUsername, setLoginUsername] = useState("");
+  // auth
+  const [authMode, setAuthMode] = useState("login"); // "login" | "signup"
+  const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [signupUsername, setSignupUsername] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(true);
 
   // recruiter form
   const [recCompanyName, setRecCompanyName] = useState("");
@@ -98,25 +105,18 @@ function App() {
 
   const handleSelectRole = role => {
     setCurrentRole(role);
-    setActiveSection("login");
+    setActiveSection(currentUser ? currentUser.role === role ? currentUser.role : "login" : "login");
+    setAuthError("");
+    setAuthNotice("");
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
-    setActiveSection(null);
-  };
-
-  const handleLogin = e => {
-    e.preventDefault();
-    if (!currentRole || !loginUsername.trim()) return;
-    const user = { role: currentRole, username: loginUsername.trim() };
+  const enterDashboardForUser = user => {
     setCurrentUser(user);
-
-    if (currentRole === "recruiter") {
+    setCurrentRole(user.role);
+    if (user.role === "recruiter") {
       setActiveSection("recruiter");
-    } else if (currentRole === "student") {
+    } else if (user.role === "student") {
       setActiveSection("student");
-      // load existing student profile if any
       const existing = store.students.find(s => s.username === user.username);
       if (existing) {
         setStuName(existing.name || "");
@@ -135,9 +135,111 @@ function App() {
         setStuResume("");
         setStuSaveStatus("Not saved yet.");
       }
-    } else if (currentRole === "placement") {
+    } else if (user.role === "placement") {
       setActiveSection("placement");
     }
+  };
+
+  // Restore session on load, and stay in sync with Supabase auth state.
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const meta = session?.user?.user_metadata;
+      if (session && meta?.role && meta?.username) {
+        enterDashboardForUser({ role: meta.role, username: meta.username, email: session.user.email });
+      }
+      setSessionLoading(false);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session) {
+        setCurrentUser(null);
+        setActiveSection(null);
+      }
+    });
+
+    return () => listener.subscription.unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setCurrentUser(null);
+    setActiveSection(null);
+  };
+
+  const handleLogin = async e => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthNotice("");
+    if (!currentRole) {
+      setAuthError("Select a role first.");
+      return;
+    }
+    setAuthLoading(true);
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: loginEmail.trim(),
+      password: loginPassword
+    });
+    setAuthLoading(false);
+
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+
+    const meta = data.user.user_metadata || {};
+    if (meta.role !== currentRole) {
+      await supabase.auth.signOut();
+      setAuthError(
+        meta.role
+          ? `This account is registered as "${meta.role}". Select that role to log in.`
+          : "This account has no role on file. Please sign up again."
+      );
+      return;
+    }
+
+    setLoginPassword("");
+    enterDashboardForUser({ role: meta.role, username: meta.username, email: data.user.email });
+  };
+
+  const handleSignup = async e => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthNotice("");
+    if (!currentRole) {
+      setAuthError("Select a role first.");
+      return;
+    }
+    if (!signupUsername.trim()) {
+      setAuthError("Enter a display name.");
+      return;
+    }
+    if (loginPassword.length < 6) {
+      setAuthError("Password must be at least 6 characters.");
+      return;
+    }
+    setAuthLoading(true);
+    const { data, error } = await supabase.auth.signUp({
+      email: loginEmail.trim(),
+      password: loginPassword,
+      options: { data: { role: currentRole, username: signupUsername.trim() } }
+    });
+    setAuthLoading(false);
+
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+
+    if (!data.session) {
+      // Email confirmation is required by the Supabase project's auth settings.
+      setAuthNotice("Account created. Check your email to confirm before logging in.");
+      setAuthMode("login");
+      return;
+    }
+
+    setLoginPassword("");
+    enterDashboardForUser({ role: currentRole, username: signupUsername.trim(), email: data.user.email });
   };
 
   const handlePostRequirement = () => {
@@ -392,6 +494,16 @@ function App() {
       ? `Authenticate to access your ${loginRoleLabel} dashboard.`
       : "Select a role on the left to begin.";
 
+  if (sessionLoading) {
+    return (
+      <div className="app-shell">
+        <div className="main" style={{ alignItems: "center", justifyContent: "center" }}>
+          <div className="muted">Checking session…</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       {/* Sidebar */}
@@ -459,7 +571,7 @@ function App() {
           </div>
           <div className="badge">
             <span className="status-dot" />
-            <span>Demo mode · In-memory data</span>
+            <span>Supabase Auth · Profile data in-memory</span>
           </div>
         </div>
 
@@ -468,25 +580,52 @@ function App() {
           <section className="card" style={{ maxWidth: 500 }}>
             <div className="card-header">
               <div className="card-title">
-                <span>Login</span>
+                <span>{authMode === "login" ? "Login" : "Create account"}</span>
                 <span className="pill">Step 1 · Authentication</span>
               </div>
             </div>
             <div className="muted" style={{ marginBottom: "0.7rem" }}>
-              Use a simple username to login for this demo. Password is not validated.
+              {authMode === "login"
+                ? "Sign in with the email and password you registered with."
+                : "Create a real account for this role. You'll use it to log in from now on."}{" "}
+              <a
+                onClick={() => {
+                  setAuthMode(authMode === "login" ? "signup" : "login");
+                  setAuthError("");
+                  setAuthNotice("");
+                }}
+              >
+                {authMode === "login" ? "Need an account? Sign up" : "Already have an account? Log in"}
+              </a>
             </div>
-            <form className="form-grid-1" onSubmit={handleLogin}>
+
+            <form
+              className="form-grid-1"
+              onSubmit={authMode === "login" ? handleLogin : handleSignup}
+            >
               <div>
                 <label>Role</label>
                 <input type="text" value={loginRoleLabel} disabled />
               </div>
+              {authMode === "signup" && (
+                <div>
+                  <label>Display name</label>
+                  <input
+                    type="text"
+                    value={signupUsername}
+                    onChange={e => setSignupUsername(e.target.value)}
+                    placeholder="e.g., acme_hr, s12345, tpo_admin"
+                    required
+                  />
+                </div>
+              )}
               <div>
-                <label>Username</label>
+                <label>Email</label>
                 <input
-                  type="text"
-                  value={loginUsername}
-                  onChange={e => setLoginUsername(e.target.value)}
-                  placeholder="e.g., acme_hr, s12345, tpo_admin"
+                  type="email"
+                  value={loginEmail}
+                  onChange={e => setLoginEmail(e.target.value)}
+                  placeholder="you@example.com"
                   required
                 />
               </div>
@@ -496,11 +635,25 @@ function App() {
                   type="password"
                   value={loginPassword}
                   onChange={e => setLoginPassword(e.target.value)}
-                  placeholder="Demo only"
+                  placeholder={authMode === "signup" ? "At least 6 characters" : "Your password"}
+                  required
+                  minLength={authMode === "signup" ? 6 : undefined}
                 />
               </div>
+              {authError && (
+                <div className="muted" style={{ color: "#f87171" }}>
+                  {authError}
+                </div>
+              )}
+              {authNotice && (
+                <div className="muted" style={{ color: "#4ade80" }}>
+                  {authNotice}
+                </div>
+              )}
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
-                <button type="submit">Login</button>
+                <button type="submit" disabled={authLoading}>
+                  {authLoading ? "Please wait…" : authMode === "login" ? "Login" : "Sign up"}
+                </button>
               </div>
             </form>
           </section>
