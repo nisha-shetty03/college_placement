@@ -237,7 +237,6 @@ function App() {
   // derived placement overview
   const placementOverview = useMemo(() => {
     const placed = store.applications.filter(a => a.status === "placed");
-    const applied = store.applications.filter(a => a.status === "applied");
     const uniquePlacedStudents = new Set(placed.map(a => a.studentUsername));
     const allStudentUsernames = new Set(store.students.map(s => s.username));
     const unplacedCount = allStudentUsernames.size - uniquePlacedStudents.size;
